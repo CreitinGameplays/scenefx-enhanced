@@ -1184,10 +1184,12 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	// background into a separate effects buffer.
 	// We capture a slightly larger area to allow for refraction at the edges.
 	pixman_region32_t capture_region;
+
 	int margin = (int)ceil(glass_data->bezel_width);
 	pixman_region32_init_rect(&capture_region,
 			dst_box.x - margin, dst_box.y - margin,
-			dst_box.width + 2 * margin, dst_box.height + 2 * margin);
+			dst_box.width - 2 + margin, dst_box.height - 2 + margin);
+
 	fx_renderer_read_to_buffer(pass, &capture_region,
 			pass->fx_effect_framebuffers->effects_buffer, pass->buffer);
 	pixman_region32_fini(&capture_region);
