@@ -25,33 +25,45 @@ uniform float clip_radius_bottom_right;
 
 float corner_alpha(vec2 size, vec2 position, float radius_tl, float radius_tr, float radius_bl, float radius_br);
 
-float rounded_rect_dist(vec2 p, vec2 size, float radius_tl, float radius_tr, float radius_bl, float radius_br) {
-	// Determine which corner we are in
+float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, float radius_bl, float radius_br, out vec2 grad) {
+	// Determine which corner we are in to select the radius
 	float r;
-	vec2 p_corner;
 	if (p.x < size.x * 0.5) {
 		if (p.y < size.y * 0.5) {
 			r = radius_tl;
-			p_corner = p - vec2(r);
 		} else {
 			r = radius_bl;
-			p_corner = p - vec2(r, size.y - r);
 		}
 	} else {
 		if (p.y < size.y * 0.5) {
 			r = radius_tr;
-			p_corner = p - vec2(size.x - r, r);
 		} else {
 			r = radius_br;
-			p_corner = p - vec2(size.x - r, size.y - r);
 		}
 	}
 
 	// Distance to a rectangle of size (size - 2*r)
-	vec2 q = abs(p - size * 0.5) - (size * 0.5 - r);
+	vec2 center = size * 0.5;
+	vec2 p_centered = p - center;
+	vec2 q = abs(p_centered) - (center - vec2(r));
+	
 	float dist_outside = length(max(q, 0.0)) - r;
 	float dist_inside = min(max(q.x, q.y), 0.0);
 	
+	// Gradient calculation (direction pointing OUTWARDS from the shape)
+	if (max(q.x, q.y) > 0.0) {
+		// Outside the inner box (corner or outside)
+		grad = normalize(max(q, 0.0));
+	} else {
+		// Inside the inner box
+		if (q.x > q.y) grad = vec2(1.0, 0.0);
+		else grad = vec2(0.0, 1.0);
+	}
+	
+	// Restore signs
+	vec2 sign_p = vec2(p_centered.x >= 0.0 ? 1.0 : -1.0, p_centered.y >= 0.0 ? 1.0 : -1.0);
+	grad *= sign_p;
+
 	return dist_outside + dist_inside;
 }
 
@@ -64,16 +76,13 @@ vec3 get_normal(vec2 p) {
 	bool is_top_edge = (position.y <= 1.0);
 	bool is_bottom_edge = (position.y + size.y >= screen_size.y - 1.0);
 
-	// For the distance to be correctly calculated for the bezel, 
-	// we should ideally exclude screen edges from the distance calculation.
-	// But with rounded corners, it's more complex.
-	// For now, let's calculate the distance to the rounded rect.
-	
-	float dist = -rounded_rect_dist(pixel_coord, size, 
+	vec2 grad;
+	float dist = -get_dist_and_grad(pixel_coord, size, 
 		is_top_edge || is_left_edge ? 0.0 : clip_radius_top_left,
 		is_top_edge || is_right_edge ? 0.0 : clip_radius_top_right,
 		is_bottom_edge || is_left_edge ? 0.0 : clip_radius_bottom_left,
-		is_bottom_edge || is_right_edge ? 0.0 : clip_radius_bottom_right);
+		is_bottom_edge || is_right_edge ? 0.0 : clip_radius_bottom_right,
+		grad);
 
 	if (dist > bezel_width || dist < 0.0) {
 		return vec3(0.0, 0.0, 1.0);
@@ -97,29 +106,10 @@ vec3 get_normal(vec2 p) {
 		dz = 0.5 * 3.14159 * cos((x - 0.5) * 3.14159);
 	}
 
-	// Approximate normal by gradient. 
-	// For a simple bezel, the normal points towards the nearest edge.
-	// We can approximate this by looking at the gradient of the rounded rect distance.
-	// But a simpler way is to use the vector from the nearest point on the boundary.
-	
-	// For now, let's stick to a simpler approximation for the normal direction
-	float dist_x = 1e10;
-	if (!is_left_edge) dist_x = min(dist_x, pixel_coord.x);
-	if (!is_right_edge) dist_x = min(dist_x, size.x - pixel_coord.x);
-
-	float dist_y = 1e10;
-	if (!is_top_edge) dist_y = min(dist_y, pixel_coord.y);
-	if (!is_bottom_edge) dist_y = min(dist_y, size.y - pixel_coord.y);
-
-	vec3 normal;
-	if (dist_x < dist_y) {
-		bool is_closer_to_left = (dist_x == pixel_coord.x);
-		normal = vec3(is_closer_to_left ? dz : -dz, 0.0, 1.0);
-	} else {
-		bool is_closer_to_top = (dist_y == pixel_coord.y);
-		normal = vec3(0.0, is_closer_to_top ? dz : -dz, 1.0);
-	}
-	return normalize(normal);
+	// Calculate the normal based on the surface slope (dz) and the edge gradient (grad).
+	// 'grad' points outwards from the window, and 'dz' is the slope along the
+	// inward direction, so 'grad * dz' provides the horizontal tilt of the normal.
+	return normalize(vec3(grad * dz, 1.0));
 }
 
 void main() {
