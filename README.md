@@ -9,6 +9,7 @@ wlroots is the de-facto library for building wayland compositors, and its scene 
 ## Compositors Using SceneFX
 Plenty of popular wayland compositors are using SceneFX to render eyecandy, including:
 - [SwayFX](https://github.com/WillPower3309/swayfx)
+- [SwayFX Enhanced](https://github.com/CreitinGameplays/swayfx-enhanced)
 - [MangoWC](https://github.com/DreamMaoMao/mangowc)
 - [mwc](https://github.com/nikoloc/mwc)
 - dwl [with a patch](https://codeberg.org/dwl/dwl-patches/src/branch/main/stale-patches/scenefx)

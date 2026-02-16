@@ -1,7 +1,7 @@
 project(
 	'scenefx',
 	'c',
-	version: '0.4.1',
+	version: '0.4.1-enhanced.1',
 	license: 'MIT',
 	meson_version: '>=1.3',
 	default_options: [
