@@ -1,4 +1,4 @@
-# scenefx
+# scenefx enhanced
 
 A fork of [wlrfx/scenefx](https://github.com/wlrfx/scenefx).
 

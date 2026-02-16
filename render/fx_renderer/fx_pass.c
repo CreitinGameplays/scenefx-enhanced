@@ -1212,6 +1212,7 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	glUniform1f(shader.bezel_width, glass_data->bezel_width);
 	glUniform1f(shader.thickness, glass_data->thickness);
 	glUniform1f(shader.refraction_index, glass_data->refraction_index);
+	glUniform1i(shader.specular_enabled, (int)glass_data->specular_enabled);
 	glUniform1f(shader.specular_opacity, glass_data->specular_opacity);
 	glUniform1f(shader.specular_angle, glass_data->specular_angle);
 	glUniform1f(shader.brightness_boost, glass_data->brightness_boost);

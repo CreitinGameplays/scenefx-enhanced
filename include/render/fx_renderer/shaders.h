@@ -178,6 +178,7 @@ struct liquid_glass_shader {
 	GLint bezel_width;
 	GLint thickness;
 	GLint refraction_index;
+	GLint specular_enabled;
 	GLint specular_opacity;
 	GLint specular_angle;
 	GLint brightness_boost;

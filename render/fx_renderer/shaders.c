@@ -365,6 +365,7 @@ bool link_liquid_glass_program(struct liquid_glass_shader *shader) {
 	shader->bezel_width = glGetUniformLocation(prog, "bezel_width");
 	shader->thickness = glGetUniformLocation(prog, "thickness");
 	shader->refraction_index = glGetUniformLocation(prog, "refraction_index");
+	shader->specular_enabled = glGetUniformLocation(prog, "specular_enabled");
 	shader->specular_opacity = glGetUniformLocation(prog, "specular_opacity");
 	shader->specular_angle = glGetUniformLocation(prog, "specular_angle");
 	shader->brightness_boost = glGetUniformLocation(prog, "brightness_boost");

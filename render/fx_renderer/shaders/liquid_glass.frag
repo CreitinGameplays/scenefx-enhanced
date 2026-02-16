@@ -13,6 +13,7 @@ uniform int surface_type;
 uniform float bezel_width;
 uniform float thickness;
 uniform float refraction_index;
+uniform bool specular_enabled;
 uniform float specular_opacity;
 uniform float specular_angle;
 uniform float brightness_boost;
@@ -177,7 +178,18 @@ void main() {
 	color.rgb *= brightness_boost;
 	color.rgb = adjust_saturation(color.rgb, saturation_boost);
 
-	// Specular highlights and reflections have been removed for a cleaner look.
+	// Specular highlights
+	if (specular_enabled && specular_opacity > 0.0) {
+		float angle_rad = radians(specular_angle);
+		// Light source direction: tilted 45 degrees from the Z-axis towards the specified angle
+		vec3 light_dir = normalize(vec3(cos(angle_rad), sin(angle_rad), 1.0));
+
+		float nl = max(dot(final_normal, light_dir), 0.0);
+		// Sharp highlight for a glassy look
+		float specular = pow(nl, 32.0);
+
+		color.rgb += specular * specular_opacity;
+	}
 
 	// Surface Noise / Grain
 	if (noise_intensity > 0.0) {
