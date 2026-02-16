@@ -1188,7 +1188,7 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	int margin = (int)ceil(glass_data->bezel_width);
 	pixman_region32_init_rect(&capture_region,
 			dst_box.x - margin, dst_box.y - margin,
-			dst_box.width - 2 + margin, dst_box.height - 2 + margin);
+			dst_box.width + 2 * margin, dst_box.height + 2 * margin);
 
 	fx_renderer_read_to_buffer(pass, &capture_region,
 			pass->fx_effect_framebuffers->effects_buffer, pass->buffer);
@@ -1213,8 +1213,14 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	glUniform1f(shader.thickness, glass_data->thickness);
 	glUniform1f(shader.refraction_index, glass_data->refraction_index);
 	glUniform1f(shader.specular_opacity, glass_data->specular_opacity);
-	glUniform2f(shader.size, (float)dst_box.width, (float)dst_box.height);
-	glUniform2f(shader.position, (float)dst_box.x, (float)dst_box.y);
+
+	struct wlr_box effect_box = dst_box;
+	if (fx_options->clipped_region.area.width > 0 && fx_options->clipped_region.area.height > 0) {
+		effect_box = fx_options->clipped_region.area;
+	}
+
+	glUniform2f(shader.size, (float)effect_box.width, (float)effect_box.height);
+	glUniform2f(shader.position, (float)effect_box.x, (float)effect_box.y);
 	glUniform2f(shader.screen_size, (float)pass->buffer->buffer->width, (float)pass->buffer->buffer->height);
 
 	glUniform2f(shader.clip_position, (float)fx_options->clipped_region.area.x, (float)fx_options->clipped_region.area.y);

@@ -2102,6 +2102,9 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 
 		transform_output_box(&glass_clipped_region_box, data);
 
+		struct liquid_glass_data scaled_data = glass->data;
+		scaled_data.bezel_width *= data->scale;
+
 		struct fx_render_liquid_glass_pass_options glass_options = {
 			.tex_options = {
 				.base = {
@@ -2112,7 +2115,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 					.clip = &render_region,
 				},
 			},
-			.glass_data = &glass->data,
+			.glass_data = &scaled_data,
 			.clipped_region = {
 				.area = glass_clipped_region_box,
 				.corners = fx_corner_radii_scale(glass_clipped_corners, data->scale),
