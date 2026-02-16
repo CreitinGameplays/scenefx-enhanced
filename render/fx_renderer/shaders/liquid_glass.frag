@@ -4,6 +4,8 @@ precision highp float;
 precision mediump float;
 #endif
 
+#define pi_2 1.57079632679
+
 varying vec2 v_texcoord;
 uniform sampler2D tex;
 
@@ -12,6 +14,12 @@ uniform float bezel_width;
 uniform float thickness;
 uniform float refraction_index;
 uniform float specular_opacity;
+uniform float specular_angle;
+uniform float brightness_boost;
+uniform float saturation_boost;
+uniform float noise_intensity;
+uniform float chromatic_aberration;
+
 uniform vec2 size;
 uniform vec2 position;
 uniform vec2 screen_size;
@@ -26,49 +34,86 @@ uniform float clip_radius_bottom_right;
 float corner_alpha(vec2 size, vec2 position, float radius_tl, float radius_tr, float radius_bl, float radius_br);
 
 float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, float radius_bl, float radius_br, out vec2 grad) {
-	// Determine which corner we are in to select the radius
-	float r;
-	if (p.x < size.x * 0.5) {
-		if (p.y < size.y * 0.5) {
-			r = radius_tl;
-		} else {
-			r = radius_bl;
-		}
-	} else {
-		if (p.y < size.y * 0.5) {
-			r = radius_tr;
-		} else {
-			r = radius_br;
-		}
-	}
-
-	// Distance to a rectangle of size (size - 2*r)
 	vec2 center = size * 0.5;
 	vec2 p_centered = p - center;
-	vec2 q = abs(p_centered) - (center - vec2(r));
-	
-	float dist_outside = length(max(q, 0.0)) - r;
-	float dist_inside = min(max(q.x, q.y), 0.0);
-	
-	// Gradient calculation (direction pointing OUTWARDS from the shape)
-	if (max(q.x, q.y) > 0.0) {
-		// Outside the inner box (corner or outside)
-		grad = normalize(max(q, 0.0));
-	} else {
-		// Inside the inner box
-		if (q.x > q.y) grad = vec2(1.0, 0.0);
-		else grad = vec2(0.0, 1.0);
-	}
-	
-	// Restore signs
-	vec2 sign_p = vec2(p_centered.x >= 0.0 ? 1.0 : -1.0, p_centered.y >= 0.0 ? 1.0 : -1.0);
-	grad *= sign_p;
 
-	return dist_outside + dist_inside;
+	// Determine which corner we are in to select the radius
+	float r;
+	if (p_centered.x < 0.0) {
+		if (p_centered.y < 0.0) r = radius_tl;
+		else r = radius_bl;
+	} else {
+		if (p_centered.y < 0.0) r = radius_tr;
+		else r = radius_br;
+	}
+
+	// sk = 12.0 / bezel_width provides a tight transition that matches the intended shape while remaining smooth.
+	float sk = 12.0 / max(bezel_width, 1.0);
+
+	// We use a smooth-absolute value and smooth-max (log-sum-exp) for the entire shape to ensure C-infinity continuity.
+	// This eliminates polygonal artifacts and ridges by providing a perfectly smooth distance field.
+	vec2 abs_xk = abs(p_centered * sk);
+	vec2 exp_m2abs = exp(-2.0 * abs_xk);
+	vec2 sabs_p = (abs_xk + log(1.0 + exp_m2abs)) / sk;
+
+	vec2 q = sabs_p - (center - vec2(r));
+
+	float m = max(q.x, q.y);
+	float smax_q = m + log(exp((q.x - m) * sk) + exp((q.y - m) * sk)) / sk;
+
+	// The gradient of the log-sum-exp is perfectly continuous.
+	grad = exp((q - vec2(m)) * sk);
+	grad /= (grad.x + grad.y);
+
+	// Multiply by the derivative of sabs (tanh) and normalize the result to ensure the gradient
+	// is smooth at the center while maintaining consistent tilt magnitude elsewhere.
+	vec2 dsabs = sign(p_centered) * (1.0 - exp_m2abs) / (1.0 + exp_m2abs);
+	grad = normalize(grad) * dsabs;
+
+	// Offset by r and the smax error at the diagonal (log(2)/sk) to keep the distance field consistent.
+	return smax_q - r - log(2.0) / sk;
 }
 
-vec3 get_normal(vec2 p) {
-	vec2 pixel_coord = p;
+void get_surface_z_dz(float x, out float z, out float dz) {
+
+	if (surface_type == 0) { // Convex Circle
+		z = sin(x * pi_2);
+		dz = pi_2 * cos(x * pi_2);
+	} else if (surface_type == 1) { // Convex Squircle
+		z = pow(1.0 - pow(1.0 - x, 4.0), 0.25);
+		// Stabilize the derivative near x=0 where z is near 0.
+		// A slightly larger epsilon here helps soften the transition at the very edge.
+		dz = pow(1.0 - x, 3.0) / max(pow(z, 3.0), 0.25);
+	} else if (surface_type == 2) { // Concave
+		z = 1.0 - sqrt(1.0 - pow(1.0 - x, 2.0));
+		dz = -(1.0 - x) / max(sqrt(1.0 - pow(1.0 - x, 2.0)), 0.02);
+	} else { // Lip
+		float z_conv = sqrt(1.0 - pow(1.0 - x, 2.0));
+		float z_conc = 1.0 - z_conv;
+		float t = x * x * x * (x * (x * 6.0 - 15.0) + 10.0); // smootherstep
+		z = mix(z_conv, z_conc, t);
+
+		float dz_conv = (1.0 - x) / max(z_conv, 0.02);
+		float dz_conc = -dz_conv;
+		float dt = 30.0 * x * x * (x * (x - 2.0) + 1.0);
+		dz = dz_conv * (1.0 - t) + dz_conc * t + (z_conc - z_conv) * dt;
+	}
+}
+
+// Pseudo-random noise function
+float rand(vec2 co) {
+	return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+// Saturation adjustment
+vec3 adjust_saturation(vec3 rgb, float adjustment) {
+	const vec3 luminance_coeff = vec3(0.2125, 0.7154, 0.0721);
+	vec3 intensity = vec3(dot(rgb, luminance_coeff));
+	return mix(intensity, rgb, adjustment);
+}
+
+void main() {
+	vec2 local_coord = gl_FragCoord.xy - position;
 
 	// Detect screen edges (within 1px tolerance)
 	bool is_left_edge = (position.x <= 1.0);
@@ -77,67 +122,68 @@ vec3 get_normal(vec2 p) {
 	bool is_bottom_edge = (position.y + size.y >= screen_size.y - 1.0);
 
 	vec2 grad;
-	float dist = -get_dist_and_grad(pixel_coord, size, 
+	float dist = -get_dist_and_grad(local_coord, size,
 		is_top_edge || is_left_edge ? 0.0 : clip_radius_top_left,
 		is_top_edge || is_right_edge ? 0.0 : clip_radius_top_right,
 		is_bottom_edge || is_left_edge ? 0.0 : clip_radius_bottom_left,
 		is_bottom_edge || is_right_edge ? 0.0 : clip_radius_bottom_right,
 		grad);
 
-	if (dist > bezel_width || dist < 0.0) {
-		return vec3(0.0, 0.0, 1.0);
+
+	vec3 final_normal = vec3(0.0, 0.0, 1.0);
+	float surface_z = 1.0;
+
+	if (dist >= 0.0 && dist <= bezel_width) {
+		float x = dist / bezel_width;
+		float z, dz;
+		get_surface_z_dz(x, z, dz);
+
+		surface_z = z;
+
+		// Normal tilts outwards by the slope dz
+		float tilt = dz * thickness;
+		final_normal = normalize(vec3(grad * tilt, 1.0));
 	}
 
-	float x = dist / bezel_width;
-	float z;
-	float dz;
+	// Height for refraction
+	float h = surface_z * thickness * bezel_width * 0.5;
 
-	if (surface_type == 0) { // Convex Circle
-		z = sqrt(1.0 - pow(1.0 - x, 2.0));
-		dz = (1.0 - x) / max(z, 0.001);
-	} else if (surface_type == 1) { // Convex Squircle
-		z = pow(1.0 - pow(1.0 - x, 4.0), 0.25);
-		dz = pow(1.0 - x, 3.0) / max(pow(z, 3.0), 0.001);
-	} else if (surface_type == 2) { // Concave
-		z = 1.0 - sqrt(1.0 - pow(x, 2.0));
-		dz = -x / max(sqrt(1.0 - pow(x, 2.0)), 0.001);
-	} else { // Lip
-		z = 0.5 + 0.5 * sin((x - 0.5) * 3.14159);
-		dz = 0.5 * 3.14159 * cos((x - 0.5) * 3.14159);
+	vec3 I = vec3(0.0, 0.0, -1.0);
+
+	// Refraction with optional chromatic aberration
+	vec4 color;
+	if (chromatic_aberration > 0.0) {
+		float ca = chromatic_aberration / screen_size.x;
+
+		vec3 R_r = refract(I, final_normal, 1.0 / (refraction_index + ca));
+		vec3 R_g = refract(I, final_normal, 1.0 / refraction_index);
+		vec3 R_b = refract(I, final_normal, 1.0 / (refraction_index - ca));
+
+		float k_r = -h / max(abs(R_r.z), 0.0001);
+		float k_g = -h / max(abs(R_g.z), 0.0001);
+		float k_b = -h / max(abs(R_b.z), 0.0001);
+
+		color.r = texture2D(tex, v_texcoord + (R_r.xy * k_r) / screen_size).r;
+		color.g = texture2D(tex, v_texcoord + (R_g.xy * k_g) / screen_size).g;
+		color.b = texture2D(tex, v_texcoord + (R_b.xy * k_b) / screen_size).b;
+		color.a = 1.0;
+	} else {
+		vec3 R = refract(I, final_normal, 1.0 / refraction_index);
+		float k = -h / max(abs(R.z), 0.0001);
+		color = texture2D(tex, v_texcoord + (R.xy * k) / screen_size);
 	}
 
-	// Calculate the normal based on the surface slope (dz) and the edge gradient (grad).
-	// 'grad' points outwards from the window, and 'dz' is the slope along the
-	// inward direction, so 'grad * dz' provides the horizontal tilt of the normal.
-	return normalize(vec3(grad * dz, 1.0));
+	// Brightness and saturation boosts
+	color.rgb *= brightness_boost;
+	color.rgb = adjust_saturation(color.rgb, saturation_boost);
+
+	// Specular highlights and reflections have been removed for a cleaner look.
+
+	// Surface Noise / Grain
+	if (noise_intensity > 0.0) {
+		float n = rand(gl_FragCoord.xy) * 2.0 - 1.0;
+		color.rgb += n * noise_intensity;
+	}
+
+	gl_FragColor = color;
 }
-
-void main() {
-	vec2 local_coord = gl_FragCoord.xy - position;
-	vec3 normal = get_normal(local_coord);
-	
-		// Refraction: Snell-Descartes Law approximation
-		// Displacement in pixels: normal.xy * thickness * (refraction_index - 1.0) * bezel_width
-		// We normalize it by screen_size because v_texcoord is in [0, 1] screen space.
-		vec2 displacement = normal.xy * thickness * (refraction_index - 1.0) * bezel_width / screen_size;
-		vec4 color = texture2D(tex, v_texcoord + displacement);
-
-		// Specular highlight: Light from top-left
-		vec3 light_dir = normalize(vec3(-1.0, -1.0, 1.5));
-		float spec = pow(max(dot(normal, light_dir), 0.0), 64.0);
-		color.rgb += spec * specular_opacity;
-
-		// Clipping
-	
-		float clip_corner_alpha = corner_alpha(
-			clip_size - 1.0,
-			clip_position + 0.5,
-			clip_radius_top_left,
-			clip_radius_top_right,
-			clip_radius_bottom_left,
-			clip_radius_bottom_right
-		);
-
-		gl_FragColor = color; // if you put color * clip_corner_alpha, every transparency will be black!!! Don't put it here.
-	
-	}

@@ -17,6 +17,11 @@ struct liquid_glass_data {
 	float thickness;
 	float refraction_index;
 	float specular_opacity;
+	float specular_angle;
+	float brightness_boost;
+	float saturation_boost;
+	float noise_intensity;
+	float chromatic_aberration;
 };
 
 #endif

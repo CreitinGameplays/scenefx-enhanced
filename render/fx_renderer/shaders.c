@@ -348,7 +348,7 @@ bool link_blur_effects_program(struct blur_effects_shader *shader) {
 }
 
 bool link_liquid_glass_program(struct liquid_glass_shader *shader) {
-	GLchar glass_src[8192];
+	GLchar glass_src[16384];
 	snprintf(glass_src, sizeof(glass_src), "%s\n%s", liquid_glass_frag_src,
 		corner_alpha_frag_src);
 
@@ -366,6 +366,11 @@ bool link_liquid_glass_program(struct liquid_glass_shader *shader) {
 	shader->thickness = glGetUniformLocation(prog, "thickness");
 	shader->refraction_index = glGetUniformLocation(prog, "refraction_index");
 	shader->specular_opacity = glGetUniformLocation(prog, "specular_opacity");
+	shader->specular_angle = glGetUniformLocation(prog, "specular_angle");
+	shader->brightness_boost = glGetUniformLocation(prog, "brightness_boost");
+	shader->saturation_boost = glGetUniformLocation(prog, "saturation_boost");
+	shader->noise_intensity = glGetUniformLocation(prog, "noise_intensity");
+	shader->chromatic_aberration = glGetUniformLocation(prog, "chromatic_aberration");
 	shader->size = glGetUniformLocation(prog, "size");
 	shader->position = glGetUniformLocation(prog, "position");
 	shader->screen_size = glGetUniformLocation(prog, "screen_size");

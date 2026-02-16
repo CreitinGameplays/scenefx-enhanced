@@ -1182,10 +1182,10 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	// We need to capture the background.
 	// To avoid sampling from the same buffer we are rendering to, we copy the
 	// background into a separate effects buffer.
-	// We capture a slightly larger area to allow for refraction at the edges.
+	// We capture a larger area to allow for refraction and reflection at the edges.
 	pixman_region32_t capture_region;
 
-	int margin = (int)ceil(glass_data->bezel_width);
+	int margin = (int)ceil(glass_data->bezel_width); 
 	pixman_region32_init_rect(&capture_region,
 			dst_box.x - margin, dst_box.y - margin,
 			dst_box.width + 2 * margin, dst_box.height + 2 * margin);
@@ -1213,6 +1213,11 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	glUniform1f(shader.thickness, glass_data->thickness);
 	glUniform1f(shader.refraction_index, glass_data->refraction_index);
 	glUniform1f(shader.specular_opacity, glass_data->specular_opacity);
+	glUniform1f(shader.specular_angle, glass_data->specular_angle);
+	glUniform1f(shader.brightness_boost, glass_data->brightness_boost);
+	glUniform1f(shader.saturation_boost, glass_data->saturation_boost);
+	glUniform1f(shader.noise_intensity, glass_data->noise_intensity);
+	glUniform1f(shader.chromatic_aberration, glass_data->chromatic_aberration);
 
 	struct wlr_box effect_box = dst_box;
 	if (fx_options->clipped_region.area.width > 0 && fx_options->clipped_region.area.height > 0) {
