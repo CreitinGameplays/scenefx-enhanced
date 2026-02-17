@@ -38,6 +38,16 @@ float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, flo
 	vec2 center = size * 0.5;
 	vec2 p_centered = p - center;
 
+	// Separate sk factors:
+	// sk_geo: controls the sharpness of the shape's outline/clipping.
+	//         Keep it high (32.0) to preserve squared corners.
+	float sk_geo = 32.0;
+
+	// sk_grad: controls the smoothness of the surface normal/gradient.
+	//          Lowering this (e.g. to 6.0) rounds the internal bevel corners,
+	//          softening the "X" miter joint artifact.
+	float sk_grad = 6.0;
+
 	// Determine which corner we are in to select the radius
 	float r;
 	if (p_centered.x < 0.0) {
@@ -48,31 +58,44 @@ float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, flo
 		else r = radius_br;
 	}
 
-	// sk = 12.0 / bezel_width provides a tight transition that matches the intended shape while remaining smooth.
-	float sk = 12.0 / max(bezel_width, 1.0);
+	// --- GEOMETRY / DISTANCE (Sharp) ---
+	vec2 abs_xk_geo = abs(p_centered * sk_geo);
+	vec2 exp_m2abs_geo = exp(-2.0 * abs_xk_geo);
+	vec2 sabs_p_geo = (abs_xk_geo + log(1.0 + exp_m2abs_geo)) / sk_geo;
+	vec2 q_geo = sabs_p_geo - (center - vec2(r));
 
-	// We use a smooth-absolute value and smooth-max (log-sum-exp) for the entire shape to ensure C-infinity continuity.
-	// This eliminates polygonal artifacts and ridges by providing a perfectly smooth distance field.
-	vec2 abs_xk = abs(p_centered * sk);
-	vec2 exp_m2abs = exp(-2.0 * abs_xk);
-	vec2 sabs_p = (abs_xk + log(1.0 + exp_m2abs)) / sk;
+	float m_geo = max(q_geo.x, q_geo.y);
+	float smax_q_geo = m_geo + log(exp((q_geo.x - m_geo) * sk_geo) + exp((q_geo.y - m_geo) * sk_geo)) / sk_geo;
+	float d = length(max(q_geo, 0.0)) + min(smax_q_geo - log(2.0) / sk_geo, 0.0) - r;
 
-	vec2 q = sabs_p - (center - vec2(r));
+	// --- GRADIENT / NORMAL (Smooth) ---
+	vec2 abs_xk_grad = abs(p_centered * sk_grad);
+	vec2 exp_m2abs_grad = exp(-2.0 * abs_xk_grad);
+	vec2 sabs_p_grad = (abs_xk_grad + log(1.0 + exp_m2abs_grad)) / sk_grad;
+	vec2 q_grad = sabs_p_grad - (center - vec2(r));
 
-	float m = max(q.x, q.y);
-	float smax_q = m + log(exp((q.x - m) * sk) + exp((q.y - m) * sk)) / sk;
+	float m_grad = max(q_grad.x, q_grad.y);
 
-	// The gradient of the log-sum-exp is perfectly continuous.
-	grad = exp((q - vec2(m)) * sk);
-	grad /= (grad.x + grad.y);
+	// Calculate smooth edge gradient
+	vec2 g_edge = exp((q_grad - vec2(m_grad)) * sk_grad);
+	g_edge /= (g_edge.x + g_edge.y);
+	g_edge = normalize(g_edge); // Normalize to keep magnitude 1.0
 
-	// Multiply by the derivative of sabs (tanh) and normalize the result to ensure the gradient
-	// is smooth at the center while maintaining consistent tilt magnitude elsewhere.
-	vec2 dsabs = sign(p_centered) * (1.0 - exp_m2abs) / (1.0 + exp_m2abs);
+	vec2 g_corner = normalize(max(q_grad, 0.001));
+	// smoothstep range needs to scale with sk_grad
+	float corner_weight = smoothstep(0.0, 2.0 / sk_grad, min(q_grad.x, q_grad.y));
+	grad = mix(g_edge, g_corner, corner_weight);
+
+	// Apply centering derivative and normalize to maintain consistent tilt magnitude.
+	// Use a softer sk for the derivative to avoid aliasing at the center axis.
+	float sk_smooth = 4.0;
+	vec2 abs_xk_smooth = abs(p_centered * sk_smooth);
+	vec2 exp_m2abs_smooth = exp(-2.0 * abs_xk_smooth);
+	vec2 dsabs = sign(p_centered) * (1.0 - exp_m2abs_smooth) / (1.0 + exp_m2abs_smooth);
 	grad = normalize(grad) * dsabs;
 
-	// Offset by r and the smax error at the diagonal (log(2)/sk) to keep the distance field consistent.
-	return smax_q - r - log(2.0) / sk;
+	// Small constant offset to compensate for the smooth-max bias.
+	return d;
 }
 
 void get_surface_z_dz(float x, out float z, out float dz) {
@@ -81,23 +104,18 @@ void get_surface_z_dz(float x, out float z, out float dz) {
 		z = sin(x * pi_2);
 		dz = pi_2 * cos(x * pi_2);
 	} else if (surface_type == 1) { // Convex Squircle
-		z = pow(1.0 - pow(1.0 - x, 4.0), 0.25);
-		// Stabilize the derivative near x=0 where z is near 0.
-		// A slightly larger epsilon here helps soften the transition at the very edge.
-		dz = pow(1.0 - x, 3.0) / max(pow(z, 3.0), 0.25);
+		// A smooth polynomial that matches the slope of Convex Circle at the edge
+		// but stays perfectly flat (dz=0) at the interior (x=1).
+		z = 1.5 * x - 0.5 * x * x * x;
+		dz = 1.5 - 1.5 * x * x;
 	} else if (surface_type == 2) { // Concave
 		z = 1.0 - sqrt(1.0 - pow(1.0 - x, 2.0));
-		dz = -(1.0 - x) / max(sqrt(1.0 - pow(1.0 - x, 2.0)), 0.02);
+		dz = -(1.0 - x) / max(sqrt(1.0 - pow(1.0 - x, 2.0)), 0.01);
 	} else { // Lip
-		float z_conv = sqrt(1.0 - pow(1.0 - x, 2.0));
-		float z_conc = 1.0 - z_conv;
-		float t = x * x * x * (x * (x * 6.0 - 15.0) + 10.0); // smootherstep
-		z = mix(z_conv, z_conc, t);
-
-		float dz_conv = (1.0 - x) / max(z_conv, 0.02);
-		float dz_conc = -dz_conv;
-		float dt = 30.0 * x * x * (x * (x - 2.0) + 1.0);
-		dz = dz_conv * (1.0 - t) + dz_conc * t + (z_conc - z_conv) * dt;
+		// A perfectly smooth s-curve transition from 0 to 1.
+		// Unlike Convex Circle/Squircle, it is flat at both the edge and the interior.
+		z = 0.5 - 0.5 * cos(x * 3.14159265359);
+		dz = 0.5 * 3.14159265359 * sin(x * 3.14159265359);
 	}
 }
 
@@ -114,7 +132,7 @@ vec3 adjust_saturation(vec3 rgb, float adjustment) {
 }
 
 void main() {
-	vec2 local_coord = gl_FragCoord.xy - position;
+    vec2 local_coord = gl_FragCoord.xy - position;
 
 	// Detect screen edges (within 1px tolerance)
 	bool is_left_edge = (position.x <= 1.0);
@@ -130,12 +148,19 @@ void main() {
 		is_bottom_edge || is_right_edge ? 0.0 : clip_radius_bottom_right,
 		grad);
 
+	if (dist < 0.0) {
+		discard;
+	}
 
 	vec3 final_normal = vec3(0.0, 0.0, 1.0);
-	float surface_z = 1.0;
+	// Convex shapes (0, 1) and Lip (3) are thick in the center (z=1), others (2) are thin (z=0)
+	float surface_z = (surface_type == 0 || surface_type == 1 || surface_type == 3) ? 1.0 : 0.0;
 
-	if (dist >= 0.0 && dist <= bezel_width) {
-		float x = dist / bezel_width;
+	// Fix for visual bugs on tiny windows (horizontal line, diagonal markings)
+	float effective_bezel_width = min(bezel_width, min(size.x, size.y) * 0.5);
+
+	if (dist <= effective_bezel_width) {
+		float x = clamp(dist / effective_bezel_width, 0.0, 1.0);
 		float z, dz;
 		get_surface_z_dz(x, z, dz);
 
@@ -147,7 +172,7 @@ void main() {
 	}
 
 	// Height for refraction
-	float h = surface_z * thickness * bezel_width * 0.5;
+	float h = surface_z * thickness * effective_bezel_width * 0.5;
 
 	vec3 I = vec3(0.0, 0.0, -1.0);
 
@@ -164,14 +189,23 @@ void main() {
 		float k_g = -h / max(abs(R_g.z), 0.0001);
 		float k_b = -h / max(abs(R_b.z), 0.0001);
 
-		color.r = texture2D(tex, v_texcoord + (R_r.xy * k_r) / screen_size).r;
-		color.g = texture2D(tex, v_texcoord + (R_g.xy * k_g) / screen_size).g;
-		color.b = texture2D(tex, v_texcoord + (R_b.xy * k_b) / screen_size).b;
+		// Clamp offset to bezel_width to ensure we stay within the captured background margin
+		vec2 offset_r = clamp(R_r.xy * k_r, -vec2(bezel_width), vec2(bezel_width));
+		vec2 offset_g = clamp(R_g.xy * k_g, -vec2(bezel_width), vec2(bezel_width));
+		vec2 offset_b = clamp(R_b.xy * k_b, -vec2(bezel_width), vec2(bezel_width));
+
+		color.r = texture2D(tex, v_texcoord + offset_r / screen_size).r;
+		color.g = texture2D(tex, v_texcoord + offset_g / screen_size).g;
+		color.b = texture2D(tex, v_texcoord + offset_b / screen_size).b;
 		color.a = 1.0;
 	} else {
 		vec3 R = refract(I, final_normal, 1.0 / refraction_index);
 		float k = -h / max(abs(R.z), 0.0001);
-		color = texture2D(tex, v_texcoord + (R.xy * k) / screen_size);
+
+		// Clamp offset to bezel_width to ensure we stay within the captured background margin
+		vec2 offset = clamp(R.xy * k, -vec2(bezel_width), vec2(bezel_width));
+
+		color = texture2D(tex, v_texcoord + offset / screen_size);
 	}
 
 	// Brightness and saturation boosts
