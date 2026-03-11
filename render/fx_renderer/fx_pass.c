@@ -1185,7 +1185,9 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	// We capture a larger area to allow for refraction and reflection at the edges.
 	pixman_region32_t capture_region;
 
-	int margin = (int)ceil(glass_data->bezel_width); 
+	// Leave one extra texel beyond the maximum refracted offset so linear
+	// filtering never blends against uncopied pixels at the capture boundary.
+	int margin = (int)ceil(glass_data->bezel_width) + 1;
 	pixman_region32_init_rect(&capture_region,
 			dst_box.x - margin, dst_box.y - margin,
 			dst_box.width + 2 * margin, dst_box.height + 2 * margin);
@@ -1202,10 +1204,14 @@ void fx_render_pass_add_liquid_glass(struct fx_gles_render_pass *pass,
 	struct fx_texture *texture = fx_get_texture(bg_tex);
 
 	struct liquid_glass_shader shader = renderer->shaders.liquid_glass;
+	setup_blending(WLR_RENDER_BLEND_MODE_NONE);
+	glDisable(GL_STENCIL_TEST);
 	glUseProgram(shader.program);
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, texture->tex);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
 	glUniform1i(shader.tex, 0);
 	glUniform1i(shader.surface_type, (int)glass_data->surface_type);

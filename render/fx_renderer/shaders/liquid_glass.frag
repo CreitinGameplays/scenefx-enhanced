@@ -34,6 +34,11 @@ uniform float clip_radius_bottom_right;
 
 float corner_alpha(vec2 size, vec2 position, float radius_tl, float radius_tr, float radius_bl, float radius_br);
 
+vec2 safe_normalize(vec2 v) {
+	float len = length(v);
+	return len > 0.0001 ? v / len : vec2(0.0);
+}
+
 float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, float radius_bl, float radius_br, out vec2 grad) {
 	vec2 center = size * 0.5;
 	vec2 p_centered = p - center;
@@ -79,9 +84,9 @@ float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, flo
 	// Calculate smooth edge gradient
 	vec2 g_edge = exp((q_grad - vec2(m_grad)) * sk_grad);
 	g_edge /= (g_edge.x + g_edge.y);
-	g_edge = normalize(g_edge); // Normalize to keep magnitude 1.0
+	g_edge = safe_normalize(g_edge); // Normalize to keep magnitude 1.0
 
-	vec2 g_corner = normalize(max(q_grad, 0.001));
+	vec2 g_corner = safe_normalize(max(q_grad, 0.001));
 	// smoothstep range needs to scale with sk_grad
 	float corner_weight = smoothstep(0.0, 2.0 / sk_grad, min(q_grad.x, q_grad.y));
 	grad = mix(g_edge, g_corner, corner_weight);
@@ -92,10 +97,64 @@ float get_dist_and_grad(vec2 p, vec2 size, float radius_tl, float radius_tr, flo
 	vec2 abs_xk_smooth = abs(p_centered * sk_smooth);
 	vec2 exp_m2abs_smooth = exp(-2.0 * abs_xk_smooth);
 	vec2 dsabs = sign(p_centered) * (1.0 - exp_m2abs_smooth) / (1.0 + exp_m2abs_smooth);
-	grad = normalize(grad) * dsabs;
+	grad = safe_normalize(grad) * dsabs;
 
 	// Small constant offset to compensate for the smooth-max bias.
 	return d;
+}
+
+float get_boundary_dist(vec2 p, vec2 size,
+		float radius_tl, float radius_tr, float radius_bl, float radius_br,
+		out vec2 grad) {
+	vec2 center = size * 0.5;
+	vec2 ray = p - center;
+	float center_dist = length(ray);
+	vec2 half_size = max(size * 0.5, vec2(0.0001));
+
+	if (center_dist <= 0.0001) {
+		grad = vec2(0.0);
+		return min(half_size.x, half_size.y);
+	}
+
+	grad = ray / center_dist;
+	vec2 dir = abs(grad);
+
+	float radius;
+	if (ray.x < 0.0) {
+		radius = ray.y < 0.0 ? radius_tl : radius_bl;
+	} else {
+		radius = ray.y < 0.0 ? radius_tr : radius_br;
+	}
+	radius = min(radius, min(half_size.x, half_size.y));
+
+	float flat_x = max(half_size.x - radius, 0.0);
+	float flat_y = max(half_size.y - radius, 0.0);
+	float boundary_dist = 1e9;
+
+	if (dir.x > 0.0001) {
+		float tx = half_size.x / dir.x;
+		float y_at_tx = dir.y * tx;
+		if (y_at_tx <= flat_y + 0.0001) {
+			boundary_dist = min(boundary_dist, tx);
+		}
+	}
+
+	if (dir.y > 0.0001) {
+		float ty = half_size.y / dir.y;
+		float x_at_ty = dir.x * ty;
+		if (x_at_ty <= flat_x + 0.0001) {
+			boundary_dist = min(boundary_dist, ty);
+		}
+	}
+
+	if (boundary_dist < 1e8 || radius <= 0.0001) {
+		return max(boundary_dist, 0.0001);
+	}
+
+	vec2 corner_center = vec2(flat_x, flat_y);
+	float proj = dot(dir, corner_center);
+	float det = max(proj * proj - dot(corner_center, corner_center) + radius * radius, 0.0);
+	return max(proj + sqrt(det), 0.0001);
 }
 
 void get_surface_z_dz(float x, out float z, out float dz) {
@@ -140,13 +199,14 @@ void main() {
 	bool is_top_edge = (position.y <= 1.0);
 	bool is_bottom_edge = (position.y + size.y >= screen_size.y - 1.0);
 
-	vec2 grad;
+	float radius_tl = is_top_edge || is_left_edge ? 0.0 : clip_radius_top_left;
+	float radius_tr = is_top_edge || is_right_edge ? 0.0 : clip_radius_top_right;
+	float radius_bl = is_bottom_edge || is_left_edge ? 0.0 : clip_radius_bottom_left;
+	float radius_br = is_bottom_edge || is_right_edge ? 0.0 : clip_radius_bottom_right;
+
+	vec2 unused_grad;
 	float dist = -get_dist_and_grad(local_coord, size,
-		is_top_edge || is_left_edge ? 0.0 : clip_radius_top_left,
-		is_top_edge || is_right_edge ? 0.0 : clip_radius_top_right,
-		is_bottom_edge || is_left_edge ? 0.0 : clip_radius_bottom_left,
-		is_bottom_edge || is_right_edge ? 0.0 : clip_radius_bottom_right,
-		grad);
+		radius_tl, radius_tr, radius_bl, radius_br, unused_grad);
 
 	if (dist < 0.0) {
 		discard;
@@ -156,19 +216,28 @@ void main() {
 	// Convex shapes (0, 1) and Lip (3) are thick in the center (z=1), others (2) are thin (z=0)
 	float surface_z = (surface_type == 0 || surface_type == 1 || surface_type == 3) ? 1.0 : 0.0;
 
-	// Fix for visual bugs on tiny windows (horizontal line, diagonal markings)
-	float effective_bezel_width = min(bezel_width, min(size.x, size.y) * 0.5);
+	float min_dim = min(size.x, size.y);
+	float effective_bezel_width = min(bezel_width, min_dim * 0.5);
+	// Use the center-to-boundary ray field as the default bevel profile. This
+	// keeps the shape aligned with the rounded-rect boundary without the
+	// Voronoi seams that the nearest-edge field introduces.
+	vec2 radial_grad;
+	vec2 center_ray = local_coord - size * 0.5;
+	float center_dist = length(center_ray);
+	float boundary_dist = get_boundary_dist(local_coord, size,
+		radius_tl, radius_tr, radius_bl, radius_br, radial_grad);
+	float radial_bezel_dist = max(boundary_dist - center_dist, 0.0);
 
-	if (dist <= effective_bezel_width) {
-		float x = clamp(dist / effective_bezel_width, 0.0, 1.0);
+	if (radial_bezel_dist <= effective_bezel_width) {
+		float x = clamp(radial_bezel_dist / max(effective_bezel_width, 0.0001), 0.0, 1.0);
 		float z, dz;
 		get_surface_z_dz(x, z, dz);
 
 		surface_z = z;
 
 		// Normal tilts outwards by the slope dz
-		float tilt = dz * thickness;
-		final_normal = normalize(vec3(grad * tilt, 1.0));
+		float tilt = dz * thickness * mix(1.0, 0.92, float(surface_type == 2));
+		final_normal = normalize(vec3(radial_grad * tilt, 1.0));
 	}
 
 	// Height for refraction
@@ -197,7 +266,6 @@ void main() {
 		color.r = texture2D(tex, v_texcoord + offset_r / screen_size).r;
 		color.g = texture2D(tex, v_texcoord + offset_g / screen_size).g;
 		color.b = texture2D(tex, v_texcoord + offset_b / screen_size).b;
-		color.a = 1.0;
 	} else {
 		vec3 R = refract(I, final_normal, 1.0 / refraction_index);
 		float k = -h / max(abs(R.z), 0.0001);
@@ -207,6 +275,10 @@ void main() {
 
 		color = texture2D(tex, v_texcoord + offset / screen_size);
 	}
+
+	// The sampled background alpha is not the window alpha. Reusing it here can
+	// leak thin transparent seams when refraction hits the capture boundary.
+	color.a = 1.0;
 
 	// Brightness and saturation boosts
 	color.rgb *= brightness_boost;
